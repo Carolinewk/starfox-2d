@@ -16,6 +16,10 @@ const WIDTH = canvas.width;
 const HEIGHT = canvas.height;
 const LEADERBOARD_KEY = "starfox2d.local-top-scores";
 const LEADERBOARD_LIMIT = 5;
+const LEVEL_XP_BASE = 90;
+const LEVEL_XP_STEP = 40;
+
+let nextActorId = 1;
 
 const PLAYER_ART = {
   scale: 2,
@@ -121,30 +125,7 @@ const keys = new Set();
 const pointer = { active: false, x: WIDTH / 2, y: HEIGHT - 90 };
 
 const state = {
-  running: false,
-  elapsed: 0,
-  lastFrame: 0,
-  scroll: 0,
-  score: 0,
-  sessionBest: 0,
-  bossTimer: 60,
-  enemyTimer: 1.15,
-  ringTimer: 2.5,
-  gateTimer: 12,
-  toast: "Mission ready",
-  toastTimer: 999,
-  flash: 0,
-  shake: 0,
-  playerBullets: [],
-  enemies: [],
-  enemyBullets: [],
-  rings: [],
-  gates: [],
-  particles: [],
-  stars: createStars(56),
-  clouds: createClouds(5),
-  boss: null,
-  player: createPlayer(),
+  ...createRunState(),
   leaderboard: loadLeaderboard(),
 };
 
@@ -177,10 +158,109 @@ function createPlayer() {
     height: spriteHeight(PLAYER_ART),
     scale: PLAYER_ART.scale,
     speed: 185,
+    maxHp: 8,
+    hp: 8,
+    damage: 1,
+    fireInterval: 0.14,
+    projectileSpeed: 320,
+    projectileRadius: 3,
+    spreadLevel: 0,
+    pierce: 0,
+    shield: 0,
     fireCooldown: 0,
     invuln: 0,
   };
 }
+
+const SHIP_UPGRADES = [
+  {
+    id: "hull",
+    title: "Reinforced Hull",
+    description: "+2 max hull, repair 2.",
+    available: (player) => player.maxHp < 22,
+    apply: (player) => {
+      player.maxHp += 2;
+      player.hp = Math.min(player.maxHp, player.hp + 2);
+    },
+  },
+  {
+    id: "damage",
+    title: "Plasma Cannons",
+    description: "+1 damage per shot.",
+    available: (player) => player.damage < 8,
+    apply: (player) => {
+      player.damage += 1;
+    },
+  },
+  {
+    id: "thrusters",
+    title: "Ion Thrusters",
+    description: "+22 flight speed.",
+    available: (player) => player.speed < 360,
+    apply: (player) => {
+      player.speed += 22;
+    },
+  },
+  {
+    id: "autoloader",
+    title: "Rapid Loader",
+    description: "-0.018s fire delay.",
+    available: (player) => player.fireInterval > 0.07,
+    apply: (player) => {
+      player.fireInterval = Math.max(0.07, player.fireInterval - 0.018);
+    },
+  },
+  {
+    id: "wing-cannons",
+    title: "Wing Cannons",
+    description: "Add 2 angled side shots.",
+    available: (player) => player.spreadLevel < 2,
+    apply: (player) => {
+      player.spreadLevel += 1;
+    },
+  },
+  {
+    id: "piercing",
+    title: "Piercing Rounds",
+    description: "Shots pierce +1 target.",
+    available: (player) => player.pierce < 3,
+    apply: (player) => {
+      player.pierce += 1;
+    },
+  },
+  {
+    id: "shield",
+    title: "Shield Matrix",
+    description: "Gain 1 shield charge.",
+    available: (player) => player.shield < 4,
+    apply: (player) => {
+      player.shield += 1;
+    },
+  },
+  {
+    id: "repair",
+    title: "Nano Repair",
+    description: "Repair 3 hull or +1 max.",
+    available: () => true,
+    apply: (player) => {
+      if (player.hp >= player.maxHp) {
+        player.maxHp += 1;
+        player.hp = player.maxHp;
+        return;
+      }
+      player.hp = Math.min(player.maxHp, player.hp + 3);
+    },
+  },
+  {
+    id: "rail",
+    title: "Rail Slugs",
+    description: "+55 shot velocity.",
+    available: (player) => player.projectileSpeed < 520,
+    apply: (player) => {
+      player.projectileSpeed += 55;
+    },
+  },
+];
 
 function createStars(count) {
   return Array.from({ length: count }, () => ({
@@ -207,6 +287,49 @@ function createClouds(count) {
     speed: 10 + index * 6,
     color: colors[index % colors.length],
   }));
+}
+
+function getLevelXpRequirement(level) {
+  return LEVEL_XP_BASE + (level - 1) * LEVEL_XP_STEP;
+}
+
+function createRunState() {
+  return {
+    running: false,
+    gameOver: false,
+    gameOverReason: "",
+    elapsed: 0,
+    lastFrame: 0,
+    scroll: 0,
+    score: 0,
+    sessionBest: 0,
+    bossTimer: 60,
+    enemyTimer: 1.15,
+    ringTimer: 2.5,
+    gateTimer: 12,
+    toast: "Mission ready",
+    toastTimer: 999,
+    flash: 0,
+    shake: 0,
+    level: 1,
+    xp: 0,
+    xpToNext: getLevelXpRequirement(1),
+    pendingLevelUps: 0,
+    levelUpChoices: [],
+    kills: 0,
+    bossesDefeated: 0,
+    shipBuild: [],
+    playerBullets: [],
+    enemies: [],
+    enemyBullets: [],
+    rings: [],
+    gates: [],
+    particles: [],
+    stars: createStars(56),
+    clouds: createClouds(5),
+    boss: null,
+    player: createPlayer(),
+  };
 }
 
 function normalizeLeaderboard(entries) {
@@ -353,6 +476,143 @@ function showToast(message, duration = 0.9) {
   state.toastTimer = duration;
 }
 
+function resetRun() {
+  const leaderboard = state.leaderboard;
+  nextActorId = 1;
+  Object.assign(state, createRunState());
+  state.leaderboard = leaderboard;
+}
+
+function recordShipUpgrade(upgrade) {
+  const existing = state.shipBuild.find((entry) => entry.id === upgrade.id);
+  if (existing) {
+    existing.count += 1;
+    return;
+  }
+
+  state.shipBuild.push({
+    id: upgrade.id,
+    title: upgrade.title,
+    count: 1,
+  });
+}
+
+function rollUpgradeChoices() {
+  const available = SHIP_UPGRADES.filter((upgrade) => upgrade.available(state.player));
+  const pool = [...available];
+  const choices = [];
+
+  while (pool.length && choices.length < 3) {
+    const pickIndex = Math.floor(rand(0, pool.length));
+    choices.push(pool.splice(pickIndex, 1)[0]);
+  }
+
+  return choices;
+}
+
+function openNextLevelUp() {
+  if (!state.running || state.levelUpChoices.length || state.pendingLevelUps <= 0) {
+    return;
+  }
+
+  state.pendingLevelUps -= 1;
+  state.levelUpChoices = rollUpgradeChoices();
+  if (!state.levelUpChoices.length) {
+    return;
+  }
+
+  showToast(`Level ${String(state.level).padStart(2, "0")} - choose upgrade`, 1.2);
+  playSfx("ring");
+}
+
+function applyUpgradeChoice(index) {
+  const upgrade = state.levelUpChoices[index];
+  if (!upgrade) {
+    return false;
+  }
+
+  upgrade.apply(state.player, state);
+  recordShipUpgrade(upgrade);
+  state.levelUpChoices = [];
+  showToast(`${upgrade.title} online`, 1.1);
+  playSfx("start");
+  openNextLevelUp();
+  return true;
+}
+
+function gainExperience(amount) {
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return;
+  }
+
+  state.xp += Math.floor(amount);
+  let leveledUp = false;
+
+  while (state.xp >= state.xpToNext) {
+    state.xp -= state.xpToNext;
+    state.level += 1;
+    state.pendingLevelUps += 1;
+    state.xpToNext = getLevelXpRequirement(state.level);
+    leveledUp = true;
+  }
+
+  if (leveledUp) {
+    openNextLevelUp();
+  }
+}
+
+function destroyPlayer(reason = "Hull breached") {
+  if (state.gameOver) {
+    return;
+  }
+
+  addParticles(state.player.x, state.player.y, {
+    count: 34,
+    colors: ["#fff6d4", "#ff9d4d", "#ff5c57", "#7be3ff"],
+    speed: 170,
+    life: 1,
+    size: 3,
+  });
+  state.player.hp = 0;
+  state.running = false;
+  state.gameOver = true;
+  state.gameOverReason = reason;
+  state.levelUpChoices = [];
+  state.pendingLevelUps = 0;
+  state.shake = Math.max(state.shake, 10);
+  pointer.active = false;
+  keys.clear();
+  showToast(reason, 1.5);
+  playSfx("boss-down");
+  syncMusicMode();
+}
+
+function takePlayerHit({ hullDamage, scorePenalty, invuln = 0.45, reason = "Hull breached" }) {
+  const player = state.player;
+  if (!state.running || player.invuln > 0) {
+    return "ignored";
+  }
+
+  if (player.shield > 0) {
+    player.shield -= 1;
+    player.invuln = Math.max(player.invuln, 0.25);
+    state.flash = Math.max(state.flash, 0.08);
+    playSfx("ring");
+    return "shielded";
+  }
+
+  player.hp = Math.max(0, player.hp - hullDamage);
+  player.invuln = Math.max(player.invuln, invuln);
+  applyPenalty(scorePenalty);
+
+  if (player.hp <= 0) {
+    destroyPlayer(reason);
+    return "destroyed";
+  }
+
+  return "damaged";
+}
+
 function handleAudioToggle() {
   if (!audioHooks) {
     return;
@@ -391,6 +651,10 @@ function startGame() {
     return;
   }
 
+  if (state.gameOver) {
+    resetRun();
+  }
+
   state.running = true;
   showToast("Engage", 1.1);
   armAudio();
@@ -404,6 +668,7 @@ function spawnEnemy() {
   const spawnX = rand(width / 2 + 12, WIDTH - width / 2 - 12);
 
   state.enemies.push({
+    id: nextActorId,
     art,
     x: spawnX,
     y: -height,
@@ -419,6 +684,8 @@ function spawnEnemy() {
     waveSpeed: rand(1.2, 2.3),
     phase: rand(0, Math.PI * 2),
   });
+
+  nextActorId += 1;
 }
 
 function spawnRing() {
@@ -459,6 +726,7 @@ function spawnBoss() {
 
   state.gates.length = 0;
   state.boss = {
+    id: nextActorId,
     art: BOSS_ART,
     x: WIDTH / 2,
     y: -height,
@@ -472,6 +740,8 @@ function spawnBoss() {
     targetY: 96,
   };
 
+  nextActorId += 1;
+
   showToast("Boss incoming", 1.8);
   state.shake = Math.max(state.shake, 6);
   playSfx("boss-incoming");
@@ -480,12 +750,36 @@ function spawnBoss() {
 
 function firePlayerBullet() {
   const player = state.player;
-  state.playerBullets.push({
-    x: player.x,
-    y: player.y - player.height / 2 + 4,
-    vy: -320,
-    radius: 3,
-  });
+  const shots = [{ offsetX: 0, offsetY: 0, angleOffset: 0 }];
+
+  if (player.spreadLevel >= 1) {
+    shots.push(
+      { offsetX: -8, offsetY: 2, angleOffset: -0.18 },
+      { offsetX: 8, offsetY: 2, angleOffset: 0.18 }
+    );
+  }
+
+  if (player.spreadLevel >= 2) {
+    shots.push(
+      { offsetX: -14, offsetY: 4, angleOffset: -0.33 },
+      { offsetX: 14, offsetY: 4, angleOffset: 0.33 }
+    );
+  }
+
+  for (const shot of shots) {
+    const angle = -Math.PI / 2 + shot.angleOffset;
+    state.playerBullets.push({
+      x: player.x + shot.offsetX,
+      y: player.y - player.height / 2 + 4 + shot.offsetY,
+      vx: Math.cos(angle) * player.projectileSpeed,
+      vy: Math.sin(angle) * player.projectileSpeed,
+      radius: player.projectileRadius + Math.floor(player.damage / 4),
+      damage: player.damage,
+      pierceLeft: player.pierce,
+      hitTargets: [],
+    });
+  }
+
   playSfx("player-shot");
 }
 
@@ -566,6 +860,11 @@ function update(dt) {
     return;
   }
 
+  if (state.levelUpChoices.length) {
+    syncHud();
+    return;
+  }
+
   state.elapsed += dt;
   updatePlayer(dt);
   updateGates(dt);
@@ -640,7 +939,7 @@ function updatePlayer(dt) {
   const wantsFire = pointer.active || keys.has("Space") || keys.has("KeyZ");
   if (wantsFire && player.fireCooldown <= 0) {
     firePlayerBullet();
-    player.fireCooldown = 0.14;
+    player.fireCooldown = player.fireInterval;
   }
 }
 
@@ -697,7 +996,6 @@ function updateGates(dt) {
 
     if (!gate.hit && gateHitPlayer(gate, state.player)) {
       gate.hit = true;
-      state.player.invuln = Math.max(state.player.invuln, 0.8);
       state.player.y = clamp(
         gate.y + gate.height / 2 + state.player.height / 2 + 10,
         HEIGHT * 0.48,
@@ -710,8 +1008,13 @@ function updateGates(dt) {
         life: 0.8,
         size: 2,
       });
-      showToast("Gate crush -120", 1.2);
-      applyPenalty(120);
+      const hitResult = takePlayerHit({
+        hullDamage: 2,
+        scorePenalty: 120,
+        invuln: 0.8,
+        reason: "Ship crushed",
+      });
+      showToast(hitResult === "shielded" ? "Shield blocked gate" : "Gate crush -120", 1.2);
       playSfx("gate-crush");
     }
 
@@ -757,10 +1060,12 @@ function updateEnemies(dt) {
         colors: ["#ff8f57", "#ffd36a", "#a23c57"],
         speed: 110,
       });
-      if (state.player.invuln <= 0) {
-        applyPenalty(30);
-        state.player.invuln = 0.55;
-      }
+      takePlayerHit({
+        hullDamage: 2,
+        scorePenalty: 30,
+        invuln: 0.55,
+        reason: "Hull breached",
+      });
       continue;
     }
 
@@ -797,21 +1102,31 @@ function updateBoss(dt) {
   }
 
   if (rectHit(state.player, boss, 0.55, 0.42) && state.player.invuln <= 0) {
-    applyPenalty(45);
-    state.player.invuln = 0.7;
+    takePlayerHit({
+      hullDamage: 2,
+      scorePenalty: 45,
+      invuln: 0.7,
+      reason: "Boss impact",
+    });
   }
 }
 
 function updatePlayerBullets(dt) {
   for (let bulletIndex = state.playerBullets.length - 1; bulletIndex >= 0; bulletIndex -= 1) {
     const bullet = state.playerBullets[bulletIndex];
+    bullet.x += bullet.vx * dt;
     bullet.y += bullet.vy * dt;
 
     let consumed = false;
 
-    if (state.boss && circleRectHit(bullet, state.boss, 0.72, 0.6)) {
+    if (
+      state.boss &&
+      !bullet.hitTargets.includes(state.boss.id) &&
+      circleRectHit(bullet, state.boss, 0.72, 0.6)
+    ) {
       consumed = true;
-      state.boss.hp -= 1;
+      bullet.hitTargets.push(state.boss.id);
+      state.boss.hp -= bullet.damage;
       addParticles(bullet.x, bullet.y, {
         count: 8,
         colors: ["#d5e9ff", "#83d7ff", "#6e7cff"],
@@ -829,7 +1144,9 @@ function updatePlayerBullets(dt) {
           life: 1.1,
           size: 3,
         });
+        state.bossesDefeated += 1;
         changeScore(1000);
+        gainExperience(120);
         showToast("Boss down +1000", 1.4);
         state.shake = 10;
         state.boss = null;
@@ -841,12 +1158,15 @@ function updatePlayerBullets(dt) {
     if (!consumed) {
       for (let enemyIndex = state.enemies.length - 1; enemyIndex >= 0; enemyIndex -= 1) {
         const enemy = state.enemies[enemyIndex];
-        if (!circleRectHit(bullet, enemy, 0.78, 0.7)) {
+        if (
+          bullet.hitTargets.includes(enemy.id) ||
+          !circleRectHit(bullet, enemy, 0.78, 0.7)
+        ) {
           continue;
         }
 
-        enemy.hp -= 1;
-        consumed = true;
+        bullet.hitTargets.push(enemy.id);
+        enemy.hp -= bullet.damage;
         addParticles(bullet.x, bullet.y, {
           count: 5,
           colors: ["#d5e9ff", "#83d7ff", "#6e7cff"],
@@ -857,7 +1177,9 @@ function updatePlayerBullets(dt) {
 
         if (enemy.hp <= 0) {
           state.enemies.splice(enemyIndex, 1);
+          state.kills += 1;
           changeScore(140);
+          gainExperience(30);
           addParticles(enemy.x, enemy.y, {
             count: 18,
             colors: ["#fff6d4", "#ff9d4d", "#ff5c57"],
@@ -869,11 +1191,23 @@ function updatePlayerBullets(dt) {
         } else {
           playSfx("enemy-hit");
         }
-        break;
+
+        if (bullet.pierceLeft <= 0) {
+          consumed = true;
+          break;
+        }
+
+        bullet.pierceLeft -= 1;
       }
     }
 
-    if (consumed || bullet.y < -12) {
+    if (
+      consumed ||
+      bullet.y < -12 ||
+      bullet.y > HEIGHT + 12 ||
+      bullet.x < -12 ||
+      bullet.x > WIDTH + 12
+    ) {
       state.playerBullets.splice(bulletIndex, 1);
     }
   }
@@ -896,10 +1230,12 @@ function updateEnemyBullets(dt) {
         life: bullet.boss ? 0.7 : 0.45,
       });
 
-      if (state.player.invuln <= 0) {
-        applyPenalty(bullet.penalty);
-        state.player.invuln = bullet.boss ? 0.65 : 0.4;
-      }
+      takePlayerHit({
+        hullDamage: bullet.boss ? 2 : 1,
+        scorePenalty: bullet.penalty,
+        invuln: bullet.boss ? 0.65 : 0.4,
+        reason: bullet.boss ? "Boss barrage" : "Hull breached",
+      });
       continue;
     }
 
@@ -916,14 +1252,24 @@ function updateEnemyBullets(dt) {
 
 function syncHud() {
   ui.score.textContent = formatScore(state.score);
-  ui.phase.textContent = state.boss
-    ? "Boss Assault"
-    : state.gates.length
-      ? "Gate Run"
-    : `Sector ${String(Math.floor(state.elapsed / 20) + 1).padStart(2, "0")}`;
+  ui.phase.textContent = !state.running
+    ? state.gameOver
+      ? "Debrief"
+      : "Stand By"
+    : state.levelUpChoices.length
+      ? "Upgrade Bay"
+      : state.boss
+        ? "Boss Assault"
+        : state.gates.length
+          ? "Gate Run"
+          : `Sector ${String(Math.floor(state.elapsed / 20) + 1).padStart(2, "0")}`;
   ui.boss.textContent = state.boss
     ? `${state.boss.hp}/${state.boss.maxHp} HP`
-    : formatClock(state.bossTimer);
+    : state.levelUpChoices.length
+      ? `Lv ${String(state.level).padStart(2, "0")}`
+      : state.gameOver
+        ? "Retry"
+        : formatClock(state.bossTimer);
 }
 
 function draw() {
@@ -941,7 +1287,9 @@ function draw() {
   drawParticlesLayer();
   drawCanvasHud();
 
-  if (!state.running) {
+  if (state.levelUpChoices.length) {
+    drawLevelUpOverlay();
+  } else if (!state.running) {
     drawOverlay();
   }
 
@@ -1065,6 +1413,30 @@ function drawParticlesLayer() {
 }
 
 function drawCanvasHud() {
+  ctx.textAlign = "left";
+  const hullBarW = 74;
+  const hullBarFill = (state.player.hp / state.player.maxHp) * hullBarW;
+
+  ctx.fillStyle = "rgba(3, 7, 16, 0.72)";
+  ctx.fillRect(8, 8, 80, 40);
+  ctx.fillStyle = "#fff6d4";
+  ctx.font = '10px "Lucida Console", monospace';
+  ctx.fillText(`HULL ${state.player.hp}/${state.player.maxHp}`, 12, 20);
+  ctx.fillStyle = "rgba(255, 255, 255, 0.16)";
+  ctx.fillRect(11, 25, hullBarW, 8);
+  ctx.fillStyle = "#7be3ff";
+  ctx.fillRect(11, 25, hullBarFill, 8);
+  ctx.strokeStyle = "#fff6d4";
+  ctx.strokeRect(11.5, 25.5, hullBarW - 1, 7);
+
+  if (state.player.shield > 0) {
+    ctx.fillStyle = "#9cecff";
+    ctx.fillText("SHD", 12, 43);
+    for (let index = 0; index < state.player.shield; index += 1) {
+      ctx.fillRect(35 + index * 9, 37, 6, 6);
+    }
+  }
+
   if (state.boss) {
     const barX = 94;
     const barY = 10;
@@ -1087,24 +1459,48 @@ function drawCanvasHud() {
     ctx.textAlign = "left";
   }
 
+  const xpBarX = 12;
+  const xpBarY = HEIGHT - 18;
+  const xpBarW = WIDTH - 24;
+  const xpFill = (state.xp / state.xpToNext) * xpBarW;
+
+  ctx.fillStyle = "rgba(3, 7, 16, 0.72)";
+  ctx.fillRect(xpBarX - 4, xpBarY - 18, xpBarW + 8, 24);
+  ctx.fillStyle = "#fff6d4";
+  ctx.fillText(`LV ${String(state.level).padStart(2, "0")}`, xpBarX, xpBarY - 8);
+  ctx.textAlign = "right";
+  ctx.fillText(`${state.xp}/${state.xpToNext} XP`, xpBarX + xpBarW, xpBarY - 8);
+  ctx.textAlign = "left";
+  ctx.fillStyle = "rgba(255, 255, 255, 0.14)";
+  ctx.fillRect(xpBarX, xpBarY, xpBarW, 8);
+  ctx.fillStyle = "#ffd36a";
+  ctx.fillRect(xpBarX, xpBarY, xpFill, 8);
+  ctx.strokeStyle = "#fff6d4";
+  ctx.strokeRect(xpBarX + 0.5, xpBarY + 0.5, xpBarW - 1, 7);
+
   if (state.toast && state.toastTimer > 0) {
     ctx.fillStyle = "rgba(3, 7, 16, 0.72)";
-    ctx.fillRect(52, HEIGHT - 44, WIDTH - 104, 24);
+    ctx.fillRect(40, HEIGHT - 62, WIDTH - 80, 24);
     ctx.fillStyle = "#ffd36a";
     ctx.textAlign = "center";
-    ctx.fillText(state.toast.toUpperCase(), WIDTH / 2, HEIGHT - 28);
+    ctx.fillText(state.toast.toUpperCase(), WIDTH / 2, HEIGHT - 46);
     ctx.textAlign = "left";
   }
 }
 
 function drawOverlay() {
+  if (state.gameOver) {
+    drawGameOverOverlay();
+    return;
+  }
+
   ctx.fillStyle = "rgba(4, 7, 14, 0.74)";
   ctx.fillRect(0, 0, WIDTH, HEIGHT);
 
-  const cardX = 26;
-  const cardY = 128;
-  const cardW = WIDTH - 52;
-  const cardH = 302;
+  const cardX = 20;
+  const cardY = 108;
+  const cardW = WIDTH - 40;
+  const cardH = 350;
 
   ctx.fillStyle = "rgba(7, 17, 30, 0.92)";
   ctx.fillRect(cardX, cardY, cardW, cardH);
@@ -1119,22 +1515,23 @@ function drawOverlay() {
 
   ctx.font = '11px "Lucida Console", monospace';
   const lines = [
-    "Destroy enemy ships for points.",
-    "Each enemy ship needs 5 shots.",
-    "Fly through rings for bonus points.",
-    "Closing gates will crush you if you miss the gap.",
-    "Missed enemies and enemy fire cost score.",
-    "Boss arrives every 60 seconds and needs 10 hits.",
+    "Destroy enemies for score and XP.",
+    "Full XP bar = pick 1 of 3 upgrades.",
+    "Upgrade ideas: hull, damage, speed.",
+    "Also: fire rate, wing cannons,",
+    "piercing rounds, shields, rail slugs.",
+    "If hull hits zero, the run ends.",
     "",
     "Move: Arrows / WASD / drag",
     "Fire: Space / Z / hold touch",
+    "Upgrade: 1 / 2 / 3 or tap card",
     "Mute: top-right icon or M key",
     "",
     "Press move, fire, or touch to begin.",
   ];
 
   lines.forEach((line, index) => {
-    ctx.fillStyle = line.startsWith("Move:") || line.startsWith("Fire:") || line.startsWith("Mute:")
+    ctx.fillStyle = line.startsWith("Move:") || line.startsWith("Fire:") || line.startsWith("Mute:") || line.startsWith("Upgrade:")
       ? "#7be3ff"
       : "#eef5ff";
     if (!line) {
@@ -1143,6 +1540,161 @@ function drawOverlay() {
     ctx.fillText(line, WIDTH / 2, cardY + 72 + index * 20);
   });
   ctx.textAlign = "left";
+}
+
+function drawGameOverOverlay() {
+  ctx.fillStyle = "rgba(4, 7, 14, 0.78)";
+  ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+  const cardX = 24;
+  const cardY = 114;
+  const cardW = WIDTH - 48;
+  const cardH = 340;
+
+  ctx.fillStyle = "rgba(7, 17, 30, 0.94)";
+  ctx.fillRect(cardX, cardY, cardW, cardH);
+  ctx.strokeStyle = "#e6be59";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(cardX + 1, cardY + 1, cardW - 2, cardH - 2);
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#fff6d4";
+  ctx.font = '22px "Impact", sans-serif';
+  ctx.fillText("RUN OVER", WIDTH / 2, cardY + 34);
+  ctx.font = '10px "Lucida Console", monospace';
+  ctx.fillStyle = "#ffb04f";
+  ctx.fillText(state.gameOverReason.toUpperCase(), WIDTH / 2, cardY + 54);
+
+  const summary = [
+    `Score ${formatScore(state.score)}`,
+    `Level ${String(state.level).padStart(2, "0")}`,
+    `Kills ${String(state.kills).padStart(2, "0")}`,
+    `Bosses ${String(state.bossesDefeated).padStart(2, "0")}`,
+  ];
+
+  summary.forEach((line, index) => {
+    ctx.fillStyle = "#eef5ff";
+    ctx.fillText(line, WIDTH / 2, cardY + 90 + index * 20);
+  });
+
+  ctx.fillStyle = "#7be3ff";
+  ctx.fillText("SHIP BUILD", WIDTH / 2, cardY + 184);
+
+  const buildLines = state.shipBuild.length
+    ? state.shipBuild
+      .slice(0, 5)
+      .map((entry) => `${entry.title} x${entry.count}`)
+    : ["Base frame only"];
+
+  buildLines.forEach((line, index) => {
+    ctx.fillStyle = "#eef5ff";
+    ctx.fillText(line, WIDTH / 2, cardY + 210 + index * 20);
+  });
+
+  ctx.fillStyle = "#ffd36a";
+  ctx.fillText("Press move, fire, or touch to relaunch.", WIDTH / 2, cardY + cardH - 22);
+  ctx.textAlign = "left";
+}
+
+function getUpgradeCardRects() {
+  const width = 82;
+  const height = 130;
+  const gap = 8;
+  const total = width * 3 + gap * 2;
+  const startX = Math.round((WIDTH - total) / 2);
+  const y = 248;
+
+  return Array.from({ length: 3 }, (_, index) => ({
+    x: startX + index * (width + gap),
+    y,
+    width,
+    height,
+  }));
+}
+
+function drawLevelUpOverlay() {
+  ctx.fillStyle = "rgba(4, 7, 14, 0.78)";
+  ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+  const cardX = 18;
+  const cardY = 154;
+  const cardW = WIDTH - 36;
+  const cardH = 264;
+
+  ctx.fillStyle = "rgba(7, 17, 30, 0.94)";
+  ctx.fillRect(cardX, cardY, cardW, cardH);
+  ctx.strokeStyle = "#e6be59";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(cardX + 1, cardY + 1, cardW - 2, cardH - 2);
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#fff6d4";
+  ctx.font = '22px "Impact", sans-serif';
+  ctx.fillText(`LEVEL ${String(state.level).padStart(2, "0")}`, WIDTH / 2, cardY + 34);
+  ctx.font = '10px "Lucida Console", monospace';
+  ctx.fillStyle = "#7be3ff";
+  ctx.fillText("Choose one ship upgrade", WIDTH / 2, cardY + 54);
+
+  const rects = getUpgradeCardRects();
+  state.levelUpChoices.forEach((upgrade, index) => {
+    drawUpgradeChoiceCard(upgrade, rects[index], index);
+  });
+
+  ctx.fillStyle = "#ffd36a";
+  ctx.fillText("Press 1, 2, 3 or tap a card", WIDTH / 2, cardY + cardH - 18);
+  ctx.textAlign = "left";
+}
+
+function drawUpgradeChoiceCard(upgrade, rect, index) {
+  ctx.fillStyle = "rgba(10, 21, 35, 0.96)";
+  ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+  ctx.strokeStyle = index === 0 ? "#ffd36a" : "#7be3ff";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(rect.x + 0.5, rect.y + 0.5, rect.width - 1, rect.height - 1);
+
+  ctx.fillStyle = "#ffd36a";
+  ctx.font = '11px "Lucida Console", monospace';
+  ctx.fillText(String(index + 1), rect.x + 8, rect.y + 14);
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#fff6d4";
+  ctx.font = '12px "Impact", sans-serif';
+  drawWrappedText(upgrade.title.toUpperCase(), rect.x + rect.width / 2, rect.y + 28, rect.width - 14, 14, 2, "center");
+
+  ctx.fillStyle = "#eef5ff";
+  ctx.font = '9px "Lucida Console", monospace';
+  drawWrappedText(upgrade.description, rect.x + 7, rect.y + 78, rect.width - 14, 12, 4, "left");
+  ctx.textAlign = "left";
+}
+
+function drawWrappedText(text, x, y, maxWidth, lineHeight, maxLines = Infinity, align = "left") {
+  const words = text.split(" ");
+  let line = "";
+  let lineCount = 0;
+
+  ctx.textAlign = align;
+
+  for (const word of words) {
+    const testLine = line ? `${line} ${word}` : word;
+    if (ctx.measureText(testLine).width <= maxWidth || !line) {
+      line = testLine;
+      continue;
+    }
+
+    ctx.fillText(line, x, y + lineCount * lineHeight);
+    lineCount += 1;
+    if (lineCount >= maxLines) {
+      return lineCount;
+    }
+    line = word;
+  }
+
+  if (line && lineCount < maxLines) {
+    ctx.fillText(line, x, y + lineCount * lineHeight);
+    lineCount += 1;
+  }
+
+  return lineCount;
 }
 
 function drawPixelSprite(sprite, palette, x, y, scale) {
@@ -1323,10 +1875,49 @@ function wantsToStart(code) {
   ].includes(code);
 }
 
+function getUpgradeIndexFromCode(code) {
+  switch (code) {
+    case "Digit1":
+    case "Numpad1":
+      return 0;
+    case "Digit2":
+    case "Numpad2":
+      return 1;
+    case "Digit3":
+    case "Numpad3":
+      return 2;
+    default:
+      return null;
+  }
+}
+
+function tryPointerUpgradeChoice(x, y) {
+  const rects = getUpgradeCardRects();
+  for (let index = 0; index < rects.length; index += 1) {
+    const rect = rects[index];
+    const insideX = x >= rect.x && x <= rect.x + rect.width;
+    const insideY = y >= rect.y && y <= rect.y + rect.height;
+    if (insideX && insideY) {
+      return applyUpgradeChoice(index);
+    }
+  }
+
+  return false;
+}
+
 document.addEventListener("keydown", (event) => {
   if (event.code === "KeyM" && !event.repeat) {
     event.preventDefault();
     handleAudioToggle();
+    return;
+  }
+
+  if (state.levelUpChoices.length) {
+    const choiceIndex = getUpgradeIndexFromCode(event.code);
+    if (choiceIndex !== null) {
+      event.preventDefault();
+      applyUpgradeChoice(choiceIndex);
+    }
     return;
   }
 
@@ -1342,8 +1933,12 @@ document.addEventListener("keyup", (event) => {
 });
 
 canvas.addEventListener("pointerdown", (event) => {
-  pointer.active = true;
   syncPointerPosition(event);
+  if (state.levelUpChoices.length) {
+    tryPointerUpgradeChoice(pointer.x, pointer.y);
+    return;
+  }
+  pointer.active = true;
   startGame();
 });
 

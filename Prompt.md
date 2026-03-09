@@ -16,3 +16,10 @@ Let's remove this big StarFox 2d prototype title, please. also, let's make the m
 for mutting, it should be an icon in the top right of the game that when clicking on it, it mutes the game.
 
 Let's also add a top leaderboard at the far left of the website
+
+
+
+####
+
+
+let's turn this game into a roguelite: we're going to build our spaceship and improve it by turn. for every enemy we will, there will be a level/exp bar that will increase and if it fulls it, the spaceship will receive 3 options of improvements to add to their spaceship for example (increase life, increase damage, increase velocity). Add more improvements ideas please. 
