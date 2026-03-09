@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Starfox 2D Prototype</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="layout">
+    <aside class="leaderboard">
+      <p class="panel-label">Top Leaderboard</p>
+      <ol class="leaderboard-list" id="leaderboardList"></ol>
+      <p class="leaderboard-note">Best local scores are saved in this browser.</p>
+    </aside>
+
+    <section class="cabinet">
+      <div class="screen-frame">
+        <div class="frame-top">
+          <div class="mission-strip">
+            <div class="hud-chip">
+              <span>Score</span>
+              <strong id="scoreValue">000000</strong>
+            </div>
+            <div class="hud-chip">
+              <span>Phase</span>
+              <strong id="phaseValue">Stand By</strong>
+            </div>
+            <div class="hud-chip">
+              <span>Boss</span>
+              <strong id="bossValue">01:00</strong>
+            </div>
+          </div>
+
+          <button class="mute-button" id="audioToggle" type="button" aria-label="Mute audio" title="Mute audio">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 14h4l5 4V6L8 10H4z"></path>
+              <path class="on-wave" d="M16.5 8.5a5.5 5.5 0 0 1 0 7"></path>
+              <path class="on-wave" d="M19 6a9 9 0 0 1 0 12"></path>
+              <path class="off-mark" d="M16 8l6 8"></path>
+              <path class="off-mark" d="M22 8l-6 8"></path>
+            </svg>
+          </button>
+        </div>
+
+        <div class="screen-surface">
+          <canvas
+            id="game"
+            width="320"
+            height="568"
+            aria-label="Playable vertical space shooter"
+          ></canvas>
+          <div class="scanlines" aria-hidden="true"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="audio.js"></script>
+  <script src="main.js"></script>
+</body>
+</html>
